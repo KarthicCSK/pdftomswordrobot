@@ -1,0 +1,65 @@
+# =====================================
+# Python Cache & Bytecode Files
+# =====================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =====================================
+# Virtual Environments
+# =====================================
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# =====================================
+# Environment Variables / Secrets
+# =====================================
+*.env
+*.ini
+secret.txt
+
+# Railway & Deployment Files
+.nixpacks/
+.nixpacks-cache/
+
+# =====================================
+# Logs & Runtime Files
+# =====================================
+*.log
+*.pid
+*.out
+*.err
+
+# =====================================
+# Temporary Files
+# =====================================
+*.tmp
+*.temp
+tmp/
+temp/
+*.swp
+*.bak
+*.old
+
+# =====================================
+# System Files (Windows / macOS / Linux)
+# =====================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# =====================================
+# LibreOffice Conversion Temp Files
+# ====================================
