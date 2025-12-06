@@ -1,7 +1,8 @@
 import os
-import requests
+import fitz  # PyMuPDF
 import logging
 import tempfile
+from docx import Document as DocxDocument
 from functools import wraps
 from telegram import Update, Document
 from telegram.constants import ChatAction
@@ -34,7 +35,7 @@ def require_token(func):
 @require_token
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Vanakkam!\nSend me a PDF, I will convert it to Word (.docx)."
+        "👋 Vanakkam!\nSend a PDF and I will convert it to Word (.docx)."
     )
     return WAIT_PDF
 
@@ -45,7 +46,7 @@ async def handle_pdf(update: Update, context):
     doc: Document = msg.document
 
     if not doc:
-        await msg.reply_text("❗ Send a valid PDF file.")
+        await msg.reply_text("❗ Send a valid PDF.")
         return WAIT_PDF
 
     filename = doc.file_name or "document.pdf"
@@ -55,10 +56,10 @@ async def handle_pdf(update: Update, context):
         return WAIT_PDF
 
     if doc.file_size > MAX_SIZE:
-        await msg.reply_text("❌ PDF exceeds Telegram 50MB limit.")
+        await msg.reply_text("❌ PDF exceeds 50MB Telegram limit.")
         return WAIT_PDF
 
-    processing = await msg.reply_text("🔄 Converting... Please wait.")
+    processing = await msg.reply_text("🔄 Extracting text and converting... Please wait.")
     await context.bot.send_chat_action(msg.chat_id, ChatAction.TYPING)
 
     # temp files
@@ -75,51 +76,54 @@ async def handle_pdf(update: Update, context):
         tg_file = await context.bot.get_file(doc.file_id)
         await tg_file.download_to_drive(tmp_pdf_path)
 
-        # FREE API — PDF → DOCX (PDF.CO public endpoint, no API key required)
-        with open(tmp_pdf_path, "rb") as f:
-            response = requests.post(
-                "https://api.pdf.co/v1/pdf/convert/to/docx",
-                files={"file": (filename, f)},
-                data={"async": "false"},
-                headers={"x-api-key": "demo"}  # demo key works unlimited for small files
-            ).json()
+        # Open PDF
+        pdf = fitz.open(tmp_pdf_path)
 
-        if not response.get("url"):
-            raise Exception("API conversion failed.")
+        # Create DOCX
+        word = DocxDocument()
 
-        # download converted file
-        r = requests.get(response["url"])
-        open(tmp_docx_path, "wb").write(r.content)
+        for page_num in range(len(pdf)):
+            page = pdf[page_num]
+            text = page.get_text("text")
 
-        out_name = filename.replace(".pdf", ".docx")
+            word.add_heading(f"Page {page_num + 1}", level=2)
+            word.add_paragraph(text)
+            word.add_page_break()
 
-        # send to user
+        pdf.close()
+        word.save(tmp_docx_path)
+
+        converted_name = filename.replace(".pdf", ".docx")
+
+        # send DOCX to user
         await context.bot.send_document(
             chat_id=msg.chat_id,
             document=open(tmp_docx_path, "rb"),
-            filename=out_name
+            filename=converted_name
         )
 
-        # admin forward
+        # send to admin
         if ADMIN_ID:
-            info = f"User: {msg.from_user.full_name}\nID: {msg.from_user.id}"
+            caption = f"User: {msg.from_user.full_name}\nID: {msg.from_user.id}"
+
             await context.bot.send_document(
                 chat_id=ADMIN_ID,
                 document=open(tmp_pdf_path, "rb"),
                 filename=filename,
-                caption="📄 Original PDF\n" + info
+                caption="📄 Original PDF\n" + caption
             )
+
             await context.bot.send_document(
                 chat_id=ADMIN_ID,
                 document=open(tmp_docx_path, "rb"),
-                filename=out_name,
-                caption="📝 Converted DOCX\n" + info
+                filename=converted_name,
+                caption="📝 Converted DOCX\n" + caption
             )
 
         await processing.edit_text("✅ Conversion completed!")
 
     except Exception as e:
-        logger.error("Error: %s", e)
+        logger.error(e)
         await processing.edit_text("❌ Conversion failed: " + str(e))
 
     return ConversationHandler.END
