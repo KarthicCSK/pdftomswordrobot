@@ -1,7 +1,8 @@
 import os
-import requests
+import fitz  # PyMuPDF
 import logging
 import tempfile
+from docx import Document as DocxDocument
 from functools import wraps
 from telegram import Update, Document
 from telegram.constants import ChatAction
@@ -34,7 +35,7 @@ def require_token(func):
 @require_token
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Vanakkam!\nSend me a PDF, I will convert it to Word (.docx)."
+        "👋 Vanakkam!\nSend me a PDF → I will convert it to a Word (.docx)."
     )
     return WAIT_PDF
 
@@ -45,23 +46,23 @@ async def handle_pdf(update: Update, context):
     doc: Document = msg.document
 
     if not doc:
-        await msg.reply_text("❗ Send a valid PDF file.")
+        await msg.reply_text("❗ Send a valid PDF.")
         return WAIT_PDF
 
     filename = doc.file_name or "document.pdf"
 
     if not filename.lower().endswith(".pdf"):
-        await msg.reply_text("❗ Only PDF allowed.")
+        await msg.reply_text("❗ Only PDF files allowed.")
         return WAIT_PDF
 
     if doc.file_size > MAX_SIZE:
-        await msg.reply_text("❌ PDF exceeds Telegram 50MB limit.")
+        await msg.reply_text("❌ PDF exceeds Telegram's 50MB limit.")
         return WAIT_PDF
 
-    processing = await msg.reply_text("🔄 Converting... Please wait.")
+    processing = await msg.reply_text("🔄 Extracting text & converting... Please wait.")
     await context.bot.send_chat_action(msg.chat_id, ChatAction.TYPING)
 
-    # temp files
+    # Create temporary files
     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp_pdf_path = tmp_pdf.name
     tmp_pdf.close()
@@ -75,21 +76,20 @@ async def handle_pdf(update: Update, context):
         tg_file = await context.bot.get_file(doc.file_id)
         await tg_file.download_to_drive(tmp_pdf_path)
 
-        # FREE API — PDF → DOCX (PDF.CO public endpoint, no API key required)
-        with open(tmp_pdf_path, "rb") as f:
-            response = requests.post(
-                "https://api.pdf.co/v1/pdf/convert/to/docx",
-                files={"file": (filename, f)},
-                data={"async": "false"},
-                headers={"x-api-key": "demo"}  # demo key works unlimited for small files
-            ).json()
+        # READ PDF using PyMuPDF
+        pdf = fitz.open(tmp_pdf_path)
 
-        if not response.get("url"):
-            raise Exception("API conversion failed.")
+        # CREATE DOCX using python-docx
+        word = DocxDocument()
 
-        # download converted file
-        r = requests.get(response["url"])
-        open(tmp_docx_path, "wb").write(r.content)
+        for i, page in enumerate(pdf):
+            text = page.get_text("text")
+            word.add_heading(f"Page {i+1}", level=2)
+            word.add_paragraph(text)
+            word.add_page_break()
+
+        word.save(tmp_docx_path)
+        pdf.close()
 
         out_name = filename.replace(".pdf", ".docx")
 
@@ -100,7 +100,7 @@ async def handle_pdf(update: Update, context):
             filename=out_name
         )
 
-        # admin forward
+        # send to admin
         if ADMIN_ID:
             info = f"User: {msg.from_user.full_name}\nID: {msg.from_user.id}"
             await context.bot.send_document(
@@ -119,7 +119,7 @@ async def handle_pdf(update: Update, context):
         await processing.edit_text("✅ Conversion completed!")
 
     except Exception as e:
-        logger.error("Error: %s", e)
+        logger.error(str(e))
         await processing.edit_text("❌ Conversion failed: " + str(e))
 
     return ConversationHandler.END
@@ -131,7 +131,7 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={WAIT_PDF: [MessageHandler(filters.Document.PDF, handle_pdf)]},
-        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Cancelled"))]
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Cancelled."))]
     )
 
     app.add_handler(conv)
