@@ -1,5 +1,0 @@
-[build]
-nixpkgs = ["libreoffice", "ghostscript"] 
-
-[start]
-cmd = "python file_pdf2word_bot.py"
