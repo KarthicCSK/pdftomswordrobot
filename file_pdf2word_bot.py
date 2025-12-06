@@ -1,48 +1,41 @@
 import os
 import logging
 import tempfile
-import subprocess
+from pdf2docx import Converter
 from functools import wraps
 from telegram import Update, Document
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    ConversationHandler,
-    filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ConversationHandler, ContextTypes, filters
 )
-from telegram.constants import ChatAction  # FIXED IMPORT
+from telegram.constants import ChatAction
 
 # States
 WAIT_PDF = range(1)
 
-# Env Vars
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MAX_SIZE = 50 * 1024 * 1024  # 50MB Telegram Bot API Limit
+MAX_SIZE = 50 * 1024 * 1024   # Telegram API limit
 
 
-def require_token(fn):
-    @wraps(fn)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def require_token(func):
+    @wraps(func)
+    async def wrapper(update: Update, context):
         if not BOT_TOKEN:
-            await update.message.reply_text("❌ BOT_TOKEN missing. Configure in Railway.")
+            await update.message.reply_text("❌ BOT_TOKEN missing.")
             return ConversationHandler.END
-        return await fn(update, context)
+        return await func(update, context)
     return wrapper
 
 
 @require_token
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Vanakkam!\n\n📄 Send a PDF file.\n"
-        "I will convert it into Word (.docx).\n\n"
+        "👋 Vanakkam!\n\n📄 Send me a PDF and I will convert it to Word (.docx).\n"
         "❌ /cancel to stop."
     )
     return WAIT_PDF
@@ -50,85 +43,84 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_token
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    doc: Document = message.document
+    msg = update.message
+    doc: Document = msg.document
 
     if not doc:
-        await message.reply_text("❗ Please send a valid PDF file.")
+        await msg.reply_text("❗ Please send a PDF file.")
         return WAIT_PDF
 
-    filename = doc.file_name
-    mime = doc.mime_type or ""
+    file_name = doc.file_name or "document.pdf"
 
-    # Must be PDF
-    if "pdf" not in mime.lower() and not filename.lower().endswith(".pdf"):
-        await message.reply_text("⚠ This bot only converts PDF files.")
+    if not file_name.lower().endswith(".pdf"):
+        await msg.reply_text("❗ This bot only converts PDF files.")
         return WAIT_PDF
 
-    # Size Check
     if doc.file_size > MAX_SIZE:
-        await message.reply_text("❌ File exceeds Telegram Bot API 50MB limit.")
+        await msg.reply_text("❌ PDF exceeds 50MB Telegram Bot API limit.")
         return WAIT_PDF
 
     # Processing message
-    processing_msg = await message.reply_text("🔄 Converting... Please wait.")
-    await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
+    processing = await msg.reply_text("🔄 Converting... Please wait.")
+    await context.bot.send_chat_action(msg.chat_id, ChatAction.TYPING)
 
     bot = context.bot
 
-    # Temp files
+    # Temp file paths
     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp_outdir = tempfile.mkdtemp()
+    tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
+    tmp_pdf_path = tmp_pdf.name
+    tmp_docx_path = tmp_docx.name
     tmp_pdf.close()
-
-    pdf_path = tmp_pdf.name
-    word_path = os.path.join(tmp_outdir, filename.replace(".pdf", ".docx"))
+    tmp_docx.close()
 
     try:
         # Download PDF
-        telegram_file = await bot.get_file(doc.file_id)
-        await telegram_file.download_to_drive(custom_path=pdf_path)
+        file = await bot.get_file(doc.file_id)
+        await file.download_to_drive(custom_path=tmp_pdf_path)
 
-        # Run LibreOffice Conversion
-        subprocess.run(
-            [
-                "soffice", "--headless", "--convert-to", "docx",
-                pdf_path, "--outdir", tmp_outdir
-            ],
-            check=True
-        )
+        # Convert PDF → DOCX
+        converter = Converter(tmp_pdf_path)
+        converter.convert(tmp_docx_path)
+        converter.close()
 
-        # Send converted file to user
+        # Send converted DOCX to user
+        out_name = file_name.replace(".pdf", ".docx")
         await bot.send_document(
-            chat_id=message.chat_id,
-            document=open(word_path, "rb"),
-            filename=os.path.basename(word_path)
+            chat_id=msg.chat_id,
+            document=open(tmp_docx_path, "rb"),
+            filename=out_name
         )
 
-        # Send to Admin
-        if ADMIN_ID != 0:
-            caption = f"📨 Converted PDF from {message.from_user.full_name}\nUser ID: {message.from_user.id}"
-            await bot.send_document(
-                chat_id=ADMIN_ID, document=open(pdf_path, "rb"),
-                filename=filename, caption="📄 Original PDF\n" + caption
-            )
-            await bot.send_document(
-                chat_id=ADMIN_ID, document=open(word_path, "rb"),
-                filename=os.path.basename(word_path), caption="📝 Converted DOCX\n" + caption
+        # Send to admin
+        if ADMIN_ID:
+            caption = (
+                f"PDF converted by: {msg.from_user.full_name}\n"
+                f"User ID: {msg.from_user.id}"
             )
 
-        await processing_msg.edit_text("✅ Conversion Completed!")
+            # original
+            await bot.send_document(
+                chat_id=ADMIN_ID,
+                document=open(tmp_pdf_path, "rb"),
+                filename=file_name,
+                caption="📄 Original PDF\n" + caption
+            )
+
+            # converted
+            await bot.send_document(
+                chat_id=ADMIN_ID,
+                document=open(tmp_docx_path, "rb"),
+                filename=out_name,
+                caption="📝 Converted DOCX\n" + caption
+            )
+
+        await processing.edit_text("✅ Conversion completed!")
 
     except Exception as e:
-        logger.exception("Conversion failed")
-        await processing_msg.edit_text("❌ Conversion failed: " + str(e))
+        logger.error(e)
+        await processing.edit_text("❌ Conversion failed: " + str(e))
 
-    return ConversationHandler.END
-
-
-@require_token
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
 
@@ -139,11 +131,10 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             WAIT_PDF: [
-                MessageHandler(filters.Document.PDF | filters.Document.ALL, handle_pdf)
+                MessageHandler(filters.Document.PDF, handle_pdf)
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("❌ Cancelled"))]
     )
 
     app.add_handler(conv)
